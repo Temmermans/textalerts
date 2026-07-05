@@ -1,0 +1,8 @@
+## Interface: 120000
+## Title: CoreAlerts
+## Notes: A standalone alert engine.
+## SavedVariables: CoreAlertsDB
+## DefaultState: Enabled
+
+CoreAlerts.lua
+Settings.lua
