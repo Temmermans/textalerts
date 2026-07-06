@@ -77,15 +77,26 @@ local eventEngine = CreateFrame("Frame")
 CA.alertPool = {}
 
 function CA.RebuildAlertPool()
-    for _, fs in ipairs(CA.alertPool) do fs:Hide() end
+    for _, entry in ipairs(CA.alertPool) do
+        entry.frame:Hide()
+        entry.frame:SetAlpha(1)
+        entry.state = "idle"
+    end
     local rules = CoreAlertsDB.rules
     while #CA.alertPool < #rules do
-        local fs = mainEngine:CreateFontString(nil, "OVERLAY")
-        fs:Hide()
-        table.insert(CA.alertPool, fs)
+        local frame = CreateFrame("Frame", nil, mainEngine)
+        frame:SetSize(1, 1)
+        local fs = frame:CreateFontString(nil, "OVERLAY")
+        fs:SetPoint("LEFT", frame, "LEFT", 0, 0)
+        fs:SetJustifyH("LEFT")
+        frame:Hide()
+        table.insert(CA.alertPool, {
+            frame=frame, fs=fs, state="idle",
+            animStart=0, activeStart=0, leaveBaseY=0, baseX=0, baseY=0,
+        })
     end
     for i = 1, #rules do
-        CA.alertPool[i]:SetFont(WOW_FONT, rules[i].fontSize or 20, "OUTLINE")
+        CA.alertPool[i].fs:SetFont(WOW_FONT, rules[i].fontSize or 20, "OUTLINE")
     end
 end
 
@@ -196,6 +207,50 @@ end
 -- ==========================================
 local playerCastingSpellID = nil
 
+local ENTER_DUR     = 0.35
+local LEAVE_DUR     = 0.40
+local ENTER_SLIDE_X = 200   -- px right of final position at animation start
+local LEAVE_SLIDE_Y = -50   -- extra px downward during leave animation
+local DRIFT_SPEED   = 10    -- px/second downward drift while active
+local MAX_DRIFT     = 60    -- cap so alerts don't drift off-screen
+
+local function UpdateAnimations()
+    local now = GetTime()
+    for _, entry in ipairs(CA.alertPool) do
+        if entry.state == "entering" then
+            local t    = math.min(1, (now - entry.animStart) / ENTER_DUR)
+            local ease = 1 - (1 - t) * (1 - t)   -- ease-out quad
+            entry.frame:ClearAllPoints()
+            entry.frame:SetPoint("LEFT", UIParent, "CENTER",
+                entry.baseX + ENTER_SLIDE_X * (1 - ease), entry.baseY)
+            entry.frame:SetAlpha(ease)
+            if t >= 1 then
+                entry.state       = "active"
+                entry.activeStart = now
+            end
+
+        elseif entry.state == "active" then
+            local drift = math.min((now - entry.activeStart) * DRIFT_SPEED, MAX_DRIFT)
+            entry.frame:ClearAllPoints()
+            entry.frame:SetPoint("LEFT", UIParent, "CENTER",
+                entry.baseX, entry.baseY - drift)
+
+        elseif entry.state == "leaving" then
+            local t    = math.min(1, (now - entry.animStart) / LEAVE_DUR)
+            local ease = t * t                      -- ease-in quad
+            entry.frame:ClearAllPoints()
+            entry.frame:SetPoint("LEFT", UIParent, "CENTER",
+                entry.baseX, entry.leaveBaseY + LEAVE_SLIDE_Y * ease)
+            entry.frame:SetAlpha(1 - ease)
+            if t >= 1 then
+                entry.state = "idle"
+                entry.frame:Hide()
+                entry.frame:SetAlpha(1)
+            end
+        end
+    end
+end
+
 local function PlayerClassMatches(rule)
     if not rule.classes or #rule.classes == 0 then return true end
     for _, c in ipairs(rule.classes) do
@@ -214,8 +269,8 @@ local function ProcessGameTick()
     local now      = GetTime()
 
     for i, rule in ipairs(rules) do
-        local fs = CA.alertPool[i]
-        if not fs then break end
+        local entry = CA.alertPool[i]
+        if not entry then break end
 
         local show  = false
         local extra = ""
@@ -244,20 +299,55 @@ local function ProcessGameTick()
             end
         end
 
+        local lineH = (rule.fontSize or 20) + 6
+
         if show then
-            fs:ClearAllPoints()
-            fs:SetPoint("CENTER", UIParent, "CENTER", anchorX, currentY)
-            fs:SetTextColor(rule.colorR or 1, rule.colorG or 1, rule.colorB or 1)
-            fs:SetText(CA.ParseCustomAlertText(rule.message, rule.fontSize) .. extra)
-            fs:Show()
-            currentY = currentY - ((rule.fontSize or 20) + 6)
+            if entry.state == "idle" then
+                entry.baseX     = anchorX
+                entry.baseY     = currentY
+                entry.animStart = now
+                entry.state     = "entering"
+                entry.fs:SetFont(WOW_FONT, rule.fontSize or 20, "OUTLINE")
+                entry.fs:SetTextColor(rule.colorR or 1, rule.colorG or 1, rule.colorB or 1)
+                entry.frame:ClearAllPoints()
+                entry.frame:SetPoint("LEFT", UIParent, "CENTER",
+                    entry.baseX + ENTER_SLIDE_X, entry.baseY)
+                entry.frame:SetAlpha(0)
+                entry.frame:Show()
+            elseif entry.state == "leaving" then
+                -- Re-triggered during leave — restart enter from the same Y slot
+                entry.baseX     = anchorX
+                entry.animStart = now
+                entry.state     = "entering"
+                entry.frame:Show()
+            end
+            if entry.state == "entering" or entry.state == "active" then
+                entry.fs:SetText(CA.ParseCustomAlertText(rule.message, rule.fontSize) .. extra)
+            end
+            currentY = currentY - lineH
         else
-            fs:Hide()
+            if entry.state == "entering" or entry.state == "active" then
+                local drift = (entry.state == "active")
+                    and math.min((now - entry.activeStart) * DRIFT_SPEED, MAX_DRIFT)
+                    or  0
+                entry.leaveBaseY = entry.baseY - drift
+                entry.animStart  = now
+                entry.state      = "leaving"
+            end
         end
     end
 
+    -- Trigger leave for pool entries beyond the current rule count
     for i = #rules + 1, #CA.alertPool do
-        CA.alertPool[i]:Hide()
+        local entry = CA.alertPool[i]
+        if entry.state == "entering" or entry.state == "active" then
+            local drift = (entry.state == "active")
+                and math.min((now - entry.activeStart) * DRIFT_SPEED, MAX_DRIFT)
+                or  0
+            entry.leaveBaseY = entry.baseY - drift
+            entry.animStart  = now
+            entry.state      = "leaving"
+        end
     end
 end
 
@@ -366,9 +456,10 @@ mainEngine:SetScript("OnEvent", function(self, event, arg1)
         ProcessGameTick()
     end)
 
-    -- Throttled OnUpdate: reads only from spellCache, zero game API calls.
+    -- OnUpdate: animations run every frame; game tick is throttled to 0.1s.
     local tickAccum = 0
     mainEngine:SetScript("OnUpdate", function(_, elapsed)
+        UpdateAnimations()
         tickAccum = tickAccum + elapsed
         if tickAccum >= 0.1 then
             tickAccum = 0
