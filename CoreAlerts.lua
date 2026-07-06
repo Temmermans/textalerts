@@ -136,14 +136,30 @@ local function CacheSpellCooldown(spellID)
             entry.cdEndTime = endTime
             return
         end
-        -- Path 1 failed: tainted context. Secret numbers prevent computing endTime.
-        -- Do NOT fall through to the duration fallback — that would reset cdEndTime to
-        -- GetTime()+dur on every SPELL_UPDATE_COOLDOWN, pushing the alert window forward
-        -- indefinitely. Preserve whatever endTime was written by the initial cast.
+        -- Path 1 failed (tainted). Two cases:
+        --   a) Cache already has a valid future endTime → skip. Overwriting would reset
+        --      cdEndTime to GetTime()+dur on every SPELL_UPDATE_COOLDOWN, pushing the alert
+        --      window forward indefinitely.
+        --   b) Cache is empty or stale → this is first detection. Movement abilities often
+        --      register isActive=true before UNIT_SPELLCAST_SUCCEEDED fires, so the
+        --      isActive=false path below never runs for them. Write the initial endTime now.
+        -- cdEndTime is always a plain number (GetTime()+dur), so the comparison is taint-safe.
+        local existing = spellCache[spellID]
+        if existing and existing.cdActive and existing.cdEndTime
+                and existing.cdEndTime > GetTime() then
+            return  -- valid cache present, preserve it
+        end
+        local dur = spellCDDuration[spellID]
+        if dur and dur > 0 then
+            local entry = spellCache[spellID] or {}
+            spellCache[spellID] = entry
+            entry.cdActive  = true
+            entry.cdEndTime = GetTime() + dur
+        end
         return
     end
-    -- cd is nil or isActive=false: cooldown not yet registered (UNIT_SPELLCAST_SUCCEEDED fires
-    -- before the API reflects the new cooldown). Use pre-cached duration for the initial endTime.
+    -- cd is nil or isActive=false: cooldown not yet registered at cast time.
+    -- Use pre-cached duration for the initial endTime.
     local dur = spellCDDuration[spellID]
     if dur and dur > 0 then
         local entry = spellCache[spellID] or {}
@@ -197,7 +213,15 @@ function CA.RefreshCache()
         end
     end
     for _, rule in ipairs(CoreAlertsDB.rules or {}) do
-        if rule.type == "cooldown" then CacheSpellCooldown(rule.spellID) end
+        if rule.type == "cooldown" then
+            -- Only cache spells actually on cooldown right now (e.g. after /reload mid-CD).
+            -- Calling CacheSpellCooldown for idle spells writes a fake cdEndTime = now+dur,
+            -- which poisons the validity check that prevents the timer-reset bug.
+            local cd = C_Spell.GetSpellCooldown(rule.spellID)
+            if cd and cd.isActive and not cd.isOnGCD then
+                CacheSpellCooldown(rule.spellID)
+            end
+        end
     end
     CacheCharges()
 end
