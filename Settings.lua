@@ -21,6 +21,22 @@ local THRESHOLD_LABELS = {
     cooldown = "Seconds before ready:",
 }
 
+local CLASS_DATA = {
+    { file="WARRIOR",     label="War", r=0.78, g=0.61, b=0.43 },
+    { file="PALADIN",     label="Pal", r=0.96, g=0.55, b=0.73 },
+    { file="HUNTER",      label="Hun", r=0.67, g=0.83, b=0.45 },
+    { file="ROGUE",       label="Rog", r=1.00, g=0.96, b=0.41 },
+    { file="PRIEST",      label="Pri", r=1.00, g=1.00, b=1.00 },
+    { file="DEATHKNIGHT", label="DK",  r=0.77, g=0.12, b=0.23 },
+    { file="SHAMAN",      label="Sha", r=0.00, g=0.44, b=0.87 },
+    { file="MAGE",        label="Mag", r=0.25, g=0.78, b=0.92 },
+    { file="WARLOCK",     label="Wrl", r=0.53, g=0.53, b=0.93 },
+    { file="MONK",        label="Mon", r=0.00, g=1.00, b=0.60 },
+    { file="DRUID",       label="Dru", r=1.00, g=0.49, b=0.04 },
+    { file="DEMONHUNTER", label="DH",  r=0.64, g=0.19, b=0.79 },
+    { file="EVOKER",      label="Evo", r=0.20, g=0.58, b=0.50 },
+}
+
 -- ==========================================
 -- BUILD SETTINGS (called from ADDON_LOADED)
 -- ==========================================
@@ -124,7 +140,7 @@ function CA.BuildSettings()
     overlayBg:SetColorTexture(0, 0, 0, 0.65)
 
     local panel = CreateFrame("Frame", nil, overlay, "BasicFrameTemplate")
-    panel:SetSize(390, 380)
+    panel:SetSize(390, 450)
     panel:SetPoint("CENTER", overlay, "CENTER", 0, 10)
 
     -- ----------------------------------------
@@ -231,6 +247,41 @@ function CA.BuildSettings()
     previewText:SetJustifyH("LEFT")
     previewText:SetText("|cFF888888(no message)|r")
 
+    -- Class selector
+    local classSelectorLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    classSelectorLabel:SetPoint("TOPLEFT", previewText, "BOTTOMLEFT", 0, -10)
+    classSelectorLabel:SetText("Classes (none = all):")
+
+    local classButtons = {}
+    local BTN_W, BTN_H, BTN_GAP = 46, 20, 3
+    for i, cd in ipairs(CLASS_DATA) do
+        local btnRow = (i <= 7) and 0 or 1
+        local btnCol = (i <= 7) and (i - 1) or (i - 8)
+        local btn = CreateFrame("Button", nil, panel)
+        btn:SetSize(BTN_W, BTN_H)
+        btn:SetPoint("TOPLEFT", classSelectorLabel, "BOTTOMLEFT",
+            btnCol * (BTN_W + BTN_GAP),
+            -4 - btnRow * (BTN_H + BTN_GAP))
+
+        local bg = btn:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints(btn)
+        bg:SetColorTexture(cd.r, cd.g, cd.b, 0.15)
+        btn.bg = bg
+
+        local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints(btn)
+        hl:SetColorTexture(1, 1, 1, 0.08)
+
+        local lbl = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        lbl:SetAllPoints(btn)
+        lbl:SetText(cd.label)
+        btn.lbl = lbl
+
+        btn.className = cd.file
+        btn.r, btn.g, btn.b = cd.r, cd.g, cd.b
+        classButtons[i] = btn
+    end
+
     -- Save / Cancel
     local saveBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     saveBtn:SetSize(80, 26)
@@ -247,11 +298,12 @@ function CA.BuildSettings()
     -- ----------------------------------------
     local rowPool     = {}
     local editorState = {
-        ruleIndex = nil,
-        ruleType  = "cooldown",
-        colorR    = 1,
-        colorG    = 1,
-        colorB    = 1,
+        ruleIndex       = nil,
+        ruleType        = "cooldown",
+        colorR          = 1,
+        colorG          = 1,
+        colorB          = 1,
+        selectedClasses = {},
     }
 
     local OpenEditor  -- forward declare
@@ -259,6 +311,18 @@ function CA.BuildSettings()
     -- ----------------------------------------
     -- Helpers
     -- ----------------------------------------
+    local function UpdateClassButtons()
+        for _, cb in ipairs(classButtons) do
+            if editorState.selectedClasses[cb.className] then
+                cb.bg:SetColorTexture(cb.r, cb.g, cb.b, 0.7)
+                cb.lbl:SetTextColor(1, 1, 1)
+            else
+                cb.bg:SetColorTexture(cb.r, cb.g, cb.b, 0.15)
+                cb.lbl:SetTextColor(0.5, 0.5, 0.5)
+            end
+        end
+    end
+
     local function UpdateColorSwatch()
         colorSwatchFill:SetColorTexture(editorState.colorR, editorState.colorG, editorState.colorB)
     end
@@ -291,8 +355,9 @@ function CA.BuildSettings()
     local function UpdateTypeUI()
         typeCycleBtn:SetText("< " .. TYPE_LABELS[editorState.ruleType] .. " >")
         if editorState.ruleType == "charges" then
-            thresholdLabel:Hide()
             thresholdBox:Hide()
+            thresholdLabel:Show()
+            thresholdLabel:SetText("Shows when: all charges available")
         else
             thresholdLabel:Show()
             thresholdBox:Show()
@@ -358,11 +423,16 @@ function CA.BuildSettings()
             row.badge:SetText(TYPE_LABELS[rule.type] or rule.type)
 
             local spellInfo = rule.spellID and C_Spell.GetSpellInfo(rule.spellID)
+            local baseName
             if spellInfo and spellInfo.name then
-                row.spellLabel:SetText(spellInfo.name .. " (" .. rule.spellID .. ")")
+                baseName = spellInfo.name .. " (" .. rule.spellID .. ")"
             else
-                row.spellLabel:SetText(tostring(rule.spellID or "?"))
+                baseName = tostring(rule.spellID or "?")
             end
+            if rule.classes and #rule.classes > 0 then
+                baseName = baseName .. " [" .. #rule.classes .. "cls]"
+            end
+            row.spellLabel:SetText(baseName)
 
             row.colorDot:SetColorTexture(rule.colorR or 1, rule.colorG or 1, rule.colorB or 1)
 
@@ -417,8 +487,16 @@ function CA.BuildSettings()
             panel.TitleText:SetText("New Rule")
         end
 
+        editorState.selectedClasses = {}
+        if rule and rule.classes then
+            for _, c in ipairs(rule.classes) do
+                editorState.selectedClasses[c] = true
+            end
+        end
+
         UpdateTypeUI()
         UpdateColorSwatch()
+        UpdateClassButtons()
         RefreshSpellIcon()
         RefreshPreview()
         overlay:Show()
@@ -437,6 +515,11 @@ function CA.BuildSettings()
             return
         end
 
+        local classes = {}
+        for cn, _ in pairs(editorState.selectedClasses) do
+            table.insert(classes, cn)
+        end
+
         local newRule = {
             type       = editorState.ruleType,
             spellID    = spellID,
@@ -447,6 +530,7 @@ function CA.BuildSettings()
             colorB     = editorState.colorB,
             message    = message,
             combatOnly = combatOnlyCheck:GetChecked() and true or false,
+            classes    = #classes > 0 and classes or nil,
         }
 
         if editorState.ruleIndex then
@@ -464,6 +548,14 @@ function CA.BuildSettings()
     -- ----------------------------------------
     -- Script wiring
     -- ----------------------------------------
+    for _, cb in ipairs(classButtons) do
+        cb:SetScript("OnClick", function()
+            local cn = cb.className
+            editorState.selectedClasses[cn] = editorState.selectedClasses[cn] and nil or true
+            UpdateClassButtons()
+        end)
+    end
+
     typeCycleBtn:SetScript("OnClick", function()
         local idx = 1
         for i, t in ipairs(TYPE_ORDER) do

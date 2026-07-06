@@ -96,41 +96,65 @@ end
 --
 -- spellCache[spellID] = {
 --   cdActive      = bool,
---   cdEndTime     = number,   GetTime()-based expiry timestamp
---   chargesActive = bool,     true = at least one charge recharging; false = all charges full
+--   cdEndTime     = number,  GetTime()-based expiry timestamp
+--   chargesActive = bool,    true = at least one charge recharging; false = all charges full
 -- }
-local spellCache = {}
+local spellCache      = {}
+local spellCDDuration = {}  -- spellID → effective cooldown duration (seconds, plain number)
+local playerClass     = nil -- classFile e.g. "MAGE", set on PLAYER_ENTERING_WORLD
 
--- Safe to call from any context. pcall guards the numeric arithmetic so a secret-number
--- taint error silently leaves the entry unchanged rather than spamming the error log.
+-- Two-path cache for spell cooldowns:
+--   Path 1 (isActive=true, clean): exact endTime from startTime+duration. Returns.
+--   Path 1 (isActive=true, tainted): arithmetic throws, return without overwriting —
+--     preserves the endTime written by the initial cast. NEVER fall through when isActive=true:
+--     SPELL_UPDATE_COOLDOWN fires repeatedly and would reset cdEndTime to GetTime()+dur each
+--     time, pushing the alert window forward indefinitely.
+--   Path 2 (isActive=false or nil): UNIT_SPELLCAST_SUCCEEDED fires before the API reflects the
+--     new cooldown, so isActive is still false. Use the pre-cached duration for the initial endTime.
 local function CacheSpellCooldown(spellID)
     local cd = C_Spell.GetSpellCooldown(spellID)
-    if not cd or not cd.isActive or cd.isOnGCD then return end
-    -- pcall BEFORE any write to spellCache.
-    -- If this throws (tainted execution context), we return without touching spellCache at all.
-    -- Writing to spellCache in a tainted context would contaminate it and taint all future
-    -- event callbacks that read it — causing the "execution tainted by CoreAlerts" cascade.
-    local ok, endTime = pcall(function() return cd.startTime + cd.duration end)
-    if not ok then return end
-    local entry = spellCache[spellID] or {}
-    spellCache[spellID] = entry
-    entry.cdActive  = true
-    entry.cdEndTime = endTime
+    if cd and cd.isActive and not cd.isOnGCD then
+        -- Path 1: clean context — compute exact endTime from startTime + duration.
+        local ok, endTime = pcall(function() return cd.startTime + cd.duration end)
+        if ok then
+            local durOk, dur = pcall(function() return cd.duration end)
+            if durOk and dur and dur > 0 then spellCDDuration[spellID] = dur end
+            local entry = spellCache[spellID] or {}
+            spellCache[spellID] = entry
+            entry.cdActive  = true
+            entry.cdEndTime = endTime
+            return
+        end
+        -- Path 1 failed: tainted context. Secret numbers prevent computing endTime.
+        -- Do NOT fall through to the duration fallback — that would reset cdEndTime to
+        -- GetTime()+dur on every SPELL_UPDATE_COOLDOWN, pushing the alert window forward
+        -- indefinitely. Preserve whatever endTime was written by the initial cast.
+        return
+    end
+    -- cd is nil or isActive=false: cooldown not yet registered (UNIT_SPELLCAST_SUCCEEDED fires
+    -- before the API reflects the new cooldown). Use pre-cached duration for the initial endTime.
+    local dur = spellCDDuration[spellID]
+    if dur and dur > 0 then
+        local entry = spellCache[spellID] or {}
+        spellCache[spellID] = entry
+        entry.cdActive  = true
+        entry.cdEndTime = GetTime() + dur
+    end
 end
 
--- Called on SPELL_UPDATE_COOLDOWN. Boolean-only — never reads numeric fields.
--- Handles the normal CD-expiry path (real cooldown finished while addon was running).
-local function ScanCooldownEnds()
-    local now = GetTime()
+-- Called on SPELL_UPDATE_COOLDOWN. Tries to cache active CDs that UNIT_SPELLCAST_SUCCEEDED
+-- may have missed due to API timing. NEVER writes for inactive CDs — SPELL_UPDATE_COOLDOWN
+-- fires in a tainted context in WoW 12.x, and writing entry fields (even false/nil) from a
+-- tainted context taints spellCache, which then contaminates all future eventEngine callbacks.
+-- ProcessGameTick's `rem > 0` check already hides alerts for expired CDs naturally.
+local function HandleCooldownUpdate()
     for _, rule in ipairs(CoreAlertsDB.rules or {}) do
         if rule.type == "cooldown" then
             local cd = C_Spell.GetSpellCooldown(rule.spellID)
-            if cd and not cd.isActive then
-                local entry = spellCache[rule.spellID]
-                if entry and (not entry.cdEndTime or now >= entry.cdEndTime) then
-                    entry.cdActive  = false
-                    entry.cdEndTime = nil
-                end
+            if cd and cd.isActive and not cd.isOnGCD then
+                -- CacheSpellCooldown's pcall-before-write ensures no taint injection
+                -- if this context is still tainted. Once taint clears it will succeed.
+                CacheSpellCooldown(rule.spellID)
             end
         end
     end
@@ -150,6 +174,17 @@ local function CacheCharges()
 end
 
 function CA.RefreshCache()
+    -- Pre-populate spellCDDuration using GetSpellCooldownTime (safe in any execution context —
+    -- it queries spell data, not player timing). This ensures the Path 3 fallback in
+    -- CacheSpellCooldown always has a duration available, even when GetSpellCooldown returns nil.
+    if C_Spell.GetSpellCooldownTime then
+        for _, rule in ipairs(CoreAlertsDB.rules or {}) do
+            if rule.type == "cooldown" then
+                local dur = C_Spell.GetSpellCooldownTime(rule.spellID)
+                if dur and dur > 0 then spellCDDuration[rule.spellID] = dur end
+            end
+        end
+    end
     for _, rule in ipairs(CoreAlertsDB.rules or {}) do
         if rule.type == "cooldown" then CacheSpellCooldown(rule.spellID) end
     end
@@ -160,6 +195,14 @@ end
 -- GAME LOOP
 -- ==========================================
 local playerCastingSpellID = nil
+
+local function PlayerClassMatches(rule)
+    if not rule.classes or #rule.classes == 0 then return true end
+    for _, c in ipairs(rule.classes) do
+        if c == playerClass then return true end
+    end
+    return false
+end
 
 local function ProcessGameTick()
     local rules = CoreAlertsDB and CoreAlertsDB.rules
@@ -179,6 +222,9 @@ local function ProcessGameTick()
         local cache = spellCache[rule.spellID]
 
         if rule.combatOnly and not UnitAffectingCombat("player") then
+            -- leave show=false
+
+        elseif not PlayerClassMatches(rule) then
             -- leave show=false
 
         elseif rule.type == "cooldown" then
@@ -288,10 +334,11 @@ mainEngine:SetScript("OnEvent", function(self, event, arg1)
 
     eventEngine:SetScript("OnEvent", function(_, ev, _, _, spellID)
         if ev == "PLAYER_ENTERING_WORLD" then
+            playerClass = select(2, UnitClass("player"))
             CA.RefreshCache()
 
         elseif ev == "SPELL_UPDATE_COOLDOWN" then
-            ScanCooldownEnds()
+            HandleCooldownUpdate()
 
         elseif ev == "SPELL_UPDATE_CHARGES" then
             CacheCharges()
@@ -305,13 +352,12 @@ mainEngine:SetScript("OnEvent", function(self, event, arg1)
 
         elseif ev == "UNIT_SPELLCAST_SUCCEEDED" then
             playerCastingSpellID = nil
+            -- SPELL_UPDATE_COOLDOWN fires after this and calls HandleCooldownUpdate,
+            -- which is the reliable path for caching the CD. The immediate attempt here
+            -- catches the common case where the API is already updated.
             for _, rule in ipairs(CoreAlertsDB.rules or {}) do
                 if rule.type == "cooldown" and rule.spellID == spellID then
-                    -- Immediate read: usually clean context on first cast.
                     CacheSpellCooldown(spellID)
-                    -- Deferred read one frame later in case the CD API lagged.
-                    -- pcall discards any taint error silently.
-                    C_Timer.After(0, function() pcall(CacheSpellCooldown, spellID) end)
                     break
                 end
             end
