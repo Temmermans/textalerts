@@ -5,16 +5,18 @@ local addonName, CA = ...
 
 local WOW_FONT = select(1, GameFontNormal:GetFont())
 
-local TYPE_ORDER = { "cooldown", "charges" }
+local TYPE_ORDER = { "cooldown", "charges", "debuff" }
 
 local TYPE_LABELS = {
     cooldown = "Cooldown",
     charges  = "Charges",
+    debuff   = "Debuff",
 }
 
 local TYPE_COLORS = {
     cooldown = { 1,    0.6,  0    },
     charges  = { 0.35, 1,    0.35 },
+    debuff   = { 0.8,  0.3,  1    },
 }
 
 local THRESHOLD_LABELS = {
@@ -178,7 +180,7 @@ function CA.BuildSettings()
     spellIconTex:SetPoint("LEFT", spellIDBox, "RIGHT", 8, 0)
     spellIconTex:Hide()
 
-    -- Threshold
+    -- Threshold (cooldown type)
     local thresholdLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     thresholdLabel:SetPoint("TOPLEFT", spellIDBox, "BOTTOMLEFT", 0, -10)
 
@@ -187,6 +189,18 @@ function CA.BuildSettings()
     thresholdBox:SetPoint("TOPLEFT", thresholdLabel, "BOTTOMLEFT", 0, -4)
     thresholdBox:SetAutoFocus(false)
     thresholdBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+    -- Pandemic % (debuff type) — same Y slot as threshold row
+    local pandemicLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    pandemicLabel:SetPoint("TOPLEFT", spellIDBox, "BOTTOMLEFT", 0, -10)
+    pandemicLabel:SetText("Pandemic %:")
+
+    local pandemicBox = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    pandemicBox:SetSize(160, 24)
+    pandemicBox:SetPoint("TOPLEFT", pandemicLabel, "BOTTOMLEFT", 0, -4)
+    pandemicBox:SetAutoFocus(false)
+    pandemicBox:SetNumeric(true)
+    pandemicBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
     -- ---- Font Size (left) + Font Color swatch (right) on the same row ----
 
@@ -354,14 +368,23 @@ function CA.BuildSettings()
 
     local function UpdateTypeUI()
         typeCycleBtn:SetText("< " .. TYPE_LABELS[editorState.ruleType] .. " >")
-        if editorState.ruleType == "charges" then
+        if editorState.ruleType == "debuff" then
+            thresholdLabel:Hide()
+            thresholdBox:Hide()
+            pandemicLabel:Show()
+            pandemicBox:Show()
+        elseif editorState.ruleType == "charges" then
             thresholdBox:Hide()
             thresholdLabel:Show()
             thresholdLabel:SetText("Shows when: all charges available")
-        else
+            pandemicLabel:Hide()
+            pandemicBox:Hide()
+        else  -- "cooldown"
             thresholdLabel:Show()
             thresholdBox:Show()
             thresholdLabel:SetText(THRESHOLD_LABELS[editorState.ruleType])
+            pandemicLabel:Hide()
+            pandemicBox:Hide()
         end
     end
 
@@ -457,6 +480,7 @@ function CA.BuildSettings()
         overlay:Hide()
         spellIDBox:ClearFocus()
         thresholdBox:ClearFocus()
+        pandemicBox:ClearFocus()
         fontSizeBox:ClearFocus()
         messageBox:ClearFocus()
     end
@@ -472,6 +496,7 @@ function CA.BuildSettings()
             editorState.colorB   = rule.colorB or 1
             spellIDBox:SetText(tostring(rule.spellID or ""))
             thresholdBox:SetText(tostring(rule.threshold or ""))
+            pandemicBox:SetText(tostring(rule.pandemicPct or 30))
             fontSizeBox:SetText(tostring(rule.fontSize or 20))
             messageBox:SetText(rule.message or "")
             combatOnlyCheck:SetChecked(rule.combatOnly or false)
@@ -481,6 +506,7 @@ function CA.BuildSettings()
             editorState.colorR, editorState.colorG, editorState.colorB = 1, 1, 1
             spellIDBox:SetText("")
             thresholdBox:SetText("")
+            pandemicBox:SetText("30")
             fontSizeBox:SetText("20")
             messageBox:SetText("")
             combatOnlyCheck:SetChecked(false)
@@ -532,6 +558,11 @@ function CA.BuildSettings()
             combatOnly = combatOnlyCheck:GetChecked() and true or false,
             classes    = #classes > 0 and classes or nil,
         }
+
+        if editorState.ruleType == "debuff" then
+            newRule.pandemicPct = math.max(1, math.min(100, tonumber(pandemicBox:GetText()) or 30))
+            newRule.threshold   = nil
+        end
 
         if editorState.ruleIndex then
             CoreAlertsDB.rules[editorState.ruleIndex] = newRule

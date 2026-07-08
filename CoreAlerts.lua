@@ -109,6 +109,8 @@ end
 --   cdActive      = bool,
 --   cdEndTime     = number,  GetTime()-based expiry timestamp
 --   chargesActive = bool,    true = at least one charge recharging; false = all charges full
+--   auraEndTime   = number,  GetTime()-based aura expiry (nil when debuff not on target)
+--   auraDuration  = number,  base aura duration in seconds (nil when not present)
 -- }
 local spellCache      = {}
 local spellCDDuration = {}  -- spellID → effective cooldown duration (seconds, plain number)
@@ -200,6 +202,35 @@ local function CacheCharges()
     end
 end
 
+-- Called from UNIT_AURA (target) and PLAYER_TARGET_CHANGED. Runs on eventEngine so the
+-- context is clean; UnitDebuff timing values are plain numbers here.
+local function CacheDebuff()
+    for _, rule in ipairs(CoreAlertsDB.rules or {}) do
+        if rule.type == "debuff" then
+            local found = false
+            for i = 1, 40 do
+                local name, _, _, _, dur, expTime, _, _, _, sid =
+                    UnitDebuff("target", i, "PLAYER")
+                if not name then break end
+                if sid == rule.spellID and dur and dur > 0 and expTime and expTime > 0 then
+                    local entry = spellCache[rule.spellID] or {}
+                    spellCache[rule.spellID] = entry
+                    entry.auraEndTime  = expTime
+                    entry.auraDuration = dur
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                local entry = spellCache[rule.spellID] or {}
+                spellCache[rule.spellID] = entry
+                entry.auraEndTime  = nil
+                entry.auraDuration = nil
+            end
+        end
+    end
+end
+
 function CA.RefreshCache()
     -- Pre-populate spellCDDuration using GetSpellCooldownTime (safe in any execution context —
     -- it queries spell data, not player timing). This ensures the Path 3 fallback in
@@ -224,6 +255,7 @@ function CA.RefreshCache()
         end
     end
     CacheCharges()
+    CacheDebuff()
 end
 
 -- ==========================================
@@ -320,6 +352,22 @@ local function ProcessGameTick()
             -- chargesActive=false → no charge recharging → spell is ready at full charges
             if cache and not cache.chargesActive then
                 show = true
+            end
+
+        elseif rule.type == "debuff" then
+            if cache and cache.auraEndTime and cache.auraDuration then
+                local ok, inWindow, remText = pcall(function()
+                    local r   = cache.auraEndTime - GetTime()
+                    local thr = cache.auraDuration * ((rule.pandemicPct or 30) / 100)
+                    if r > 0 and r <= thr then
+                        return true, string.format(" %.1fs", r)
+                    end
+                    return false, ""
+                end)
+                if ok and inWindow then
+                    show  = true
+                    extra = remText
+                end
             end
         end
 
@@ -438,6 +486,8 @@ mainEngine:SetScript("OnEvent", function(self, event, arg1)
     eventEngine:RegisterEvent("PLAYER_ENTERING_WORLD")
     eventEngine:RegisterEvent("SPELL_UPDATE_COOLDOWN")
     eventEngine:RegisterEvent("SPELL_UPDATE_CHARGES")
+    eventEngine:RegisterEvent("PLAYER_TARGET_CHANGED")
+    eventEngine:RegisterUnitEvent("UNIT_AURA",                    "target")
     eventEngine:RegisterUnitEvent("UNIT_SPELLCAST_START",         "player")
     eventEngine:RegisterUnitEvent("UNIT_SPELLCAST_STOP",          "player")
     eventEngine:RegisterUnitEvent("UNIT_SPELLCAST_FAILED",        "player")
@@ -456,6 +506,9 @@ mainEngine:SetScript("OnEvent", function(self, event, arg1)
 
         elseif ev == "SPELL_UPDATE_CHARGES" then
             CacheCharges()
+
+        elseif ev == "UNIT_AURA" or ev == "PLAYER_TARGET_CHANGED" then
+            CacheDebuff()
 
         elseif ev == "UNIT_SPELLCAST_START" or ev == "UNIT_SPELLCAST_CHANNEL_START" then
             playerCastingSpellID = spellID
