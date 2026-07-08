@@ -142,7 +142,7 @@ function CA.BuildSettings()
     overlayBg:SetColorTexture(0, 0, 0, 0.65)
 
     local panel = CreateFrame("Frame", nil, overlay, "BasicFrameTemplate")
-    panel:SetSize(390, 450)
+    panel:SetSize(390, 470)
     panel:SetPoint("CENTER", overlay, "CENTER", 0, 10)
 
     -- ----------------------------------------
@@ -238,6 +238,27 @@ function CA.BuildSettings()
     swatchHighlight:SetAllPoints(colorSwatch)
     swatchHighlight:SetColorTexture(1, 1, 1, 0.15)
 
+    local borderColorLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    borderColorLabel:SetPoint("TOPLEFT", colorLabel, "TOPLEFT", 120, 0)
+    borderColorLabel:SetText("Border:")
+
+    local borderColorSwatch = CreateFrame("Button", nil, panel)
+    borderColorSwatch:SetSize(30, 24)
+    borderColorSwatch:SetPoint("TOPLEFT", borderColorLabel, "BOTTOMLEFT", 0, -4)
+
+    local borderSwatchBorder = borderColorSwatch:CreateTexture(nil, "BACKGROUND")
+    borderSwatchBorder:SetAllPoints(borderColorSwatch)
+    borderSwatchBorder:SetColorTexture(0.55, 0.55, 0.55, 1)
+
+    local borderSwatchFill = borderColorSwatch:CreateTexture(nil, "ARTWORK")
+    borderSwatchFill:SetPoint("TOPLEFT",     borderColorSwatch, "TOPLEFT",     1, -1)
+    borderSwatchFill:SetPoint("BOTTOMRIGHT", borderColorSwatch, "BOTTOMRIGHT", -1,  1)
+    borderSwatchFill:SetColorTexture(1, 1, 1)
+
+    local borderSwatchHighlight = borderColorSwatch:CreateTexture(nil, "HIGHLIGHT")
+    borderSwatchHighlight:SetAllPoints(borderColorSwatch)
+    borderSwatchHighlight:SetColorTexture(1, 1, 1, 0.15)
+
     -- ---- Message + Preview ----
 
     local messageLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -296,6 +317,16 @@ function CA.BuildSettings()
         classButtons[i] = btn
     end
 
+    -- Glow border checkbox
+    local glowCheck = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    glowCheck:SetSize(24, 24)
+    glowCheck:SetPoint("TOPLEFT", classSelectorLabel, "BOTTOMLEFT",
+        0, -(4 + (BTN_H + BTN_GAP) * 2 + 10))
+
+    local glowLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    glowLabel:SetPoint("LEFT", glowCheck, "RIGHT", 2, 0)
+    glowLabel:SetText("Glow border")
+
     -- Save / Cancel
     local saveBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
     saveBtn:SetSize(80, 26)
@@ -317,6 +348,9 @@ function CA.BuildSettings()
         colorR          = 1,
         colorG          = 1,
         colorB          = 1,
+        borderColorR    = 1,
+        borderColorG    = 1,
+        borderColorB    = 1,
         selectedClasses = {},
     }
 
@@ -339,6 +373,10 @@ function CA.BuildSettings()
 
     local function UpdateColorSwatch()
         colorSwatchFill:SetColorTexture(editorState.colorR, editorState.colorG, editorState.colorB)
+    end
+
+    local function UpdateBorderColorSwatch()
+        borderSwatchFill:SetColorTexture(editorState.borderColorR, editorState.borderColorG, editorState.borderColorB)
     end
 
     local function RefreshSpellIcon()
@@ -490,26 +528,32 @@ function CA.BuildSettings()
         local rule = ruleIndex and CoreAlertsDB.rules[ruleIndex]
 
         if rule then
-            editorState.ruleType = rule.type or "cooldown"
-            editorState.colorR   = rule.colorR or 1
-            editorState.colorG   = rule.colorG or 1
-            editorState.colorB   = rule.colorB or 1
+            editorState.ruleType    = rule.type or "cooldown"
+            editorState.colorR      = rule.colorR or 1
+            editorState.colorG      = rule.colorG or 1
+            editorState.colorB      = rule.colorB or 1
+            editorState.borderColorR = rule.borderColorR or rule.colorR or 1
+            editorState.borderColorG = rule.borderColorG or rule.colorG or 1
+            editorState.borderColorB = rule.borderColorB or rule.colorB or 1
             spellIDBox:SetText(tostring(rule.spellID or ""))
             thresholdBox:SetText(tostring(rule.threshold or ""))
             pandemicBox:SetText(tostring(rule.pandemicPct or 30))
             fontSizeBox:SetText(tostring(rule.fontSize or 20))
             messageBox:SetText(rule.message or "")
             combatOnlyCheck:SetChecked(rule.combatOnly or false)
+            glowCheck:SetChecked(rule.glow or false)
             panel.TitleText:SetText("Edit Rule")
         else
-            editorState.ruleType = "cooldown"
+            editorState.ruleType    = "cooldown"
             editorState.colorR, editorState.colorG, editorState.colorB = 1, 1, 1
+            editorState.borderColorR, editorState.borderColorG, editorState.borderColorB = 1, 1, 1
             spellIDBox:SetText("")
             thresholdBox:SetText("")
             pandemicBox:SetText("30")
             fontSizeBox:SetText("20")
             messageBox:SetText("")
             combatOnlyCheck:SetChecked(false)
+            glowCheck:SetChecked(false)
             panel.TitleText:SetText("New Rule")
         end
 
@@ -522,6 +566,7 @@ function CA.BuildSettings()
 
         UpdateTypeUI()
         UpdateColorSwatch()
+        UpdateBorderColorSwatch()
         UpdateClassButtons()
         RefreshSpellIcon()
         RefreshPreview()
@@ -551,11 +596,15 @@ function CA.BuildSettings()
             spellID    = spellID,
             threshold  = threshold or 0,
             fontSize   = math.max(8, math.min(72, fontSize)),
-            colorR     = editorState.colorR,
-            colorG     = editorState.colorG,
-            colorB     = editorState.colorB,
+            colorR       = editorState.colorR,
+            colorG       = editorState.colorG,
+            colorB       = editorState.colorB,
+            borderColorR = editorState.borderColorR,
+            borderColorG = editorState.borderColorG,
+            borderColorB = editorState.borderColorB,
             message    = message,
             combatOnly = combatOnlyCheck:GetChecked() and true or false,
+            glow       = glowCheck:GetChecked() and true or false,
             classes    = #classes > 0 and classes or nil,
         }
 
@@ -613,6 +662,27 @@ function CA.BuildSettings()
                 editorState.colorR, editorState.colorG, editorState.colorB = prevR, prevG, prevB
                 UpdateColorSwatch()
                 RefreshPreview()
+            end,
+        })
+    end)
+
+    borderColorSwatch:SetScript("OnClick", function()
+        local prevR = editorState.borderColorR
+        local prevG = editorState.borderColorG
+        local prevB = editorState.borderColorB
+        ColorPickerFrame:SetupColorPickerAndShow({
+            r          = editorState.borderColorR,
+            g          = editorState.borderColorG,
+            b          = editorState.borderColorB,
+            hasOpacity = false,
+            swatchFunc = function()
+                local r, g, b = ColorPickerFrame:GetColorRGB()
+                editorState.borderColorR, editorState.borderColorG, editorState.borderColorB = r, g, b
+                UpdateBorderColorSwatch()
+            end,
+            cancelFunc = function()
+                editorState.borderColorR, editorState.borderColorG, editorState.borderColorB = prevR, prevG, prevB
+                UpdateBorderColorSwatch()
             end,
         })
     end)

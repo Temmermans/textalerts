@@ -86,12 +86,35 @@ function CA.RebuildAlertPool()
     while #CA.alertPool < #rules do
         local frame = CreateFrame("Frame", nil, mainEngine)
         frame:SetSize(1, 1)
+
+        -- glowTex on OVERLAY before fs so text still renders on top; ADD blend creates a bloom
+        local glowTex = frame:CreateTexture(nil, "OVERLAY")
+        glowTex:SetPoint("LEFT", frame, "LEFT", -16, 0)
+        glowTex:SetWidth(420)
+        glowTex:SetHeight(34)
+        glowTex:SetBlendMode("ADD")
+        glowTex:SetGradient("HORIZONTAL", CreateColor(1, 1, 1, 0.7), CreateColor(1, 1, 1, 0))
+        glowTex:Hide()
+
         local fs = frame:CreateFontString(nil, "OVERLAY")
         fs:SetPoint("LEFT", frame, "LEFT", 0, 0)
         fs:SetJustifyH("LEFT")
+
+        local bg = frame:CreateTexture(nil, "ARTWORK")
+        bg:SetPoint("LEFT", frame, "LEFT", -6, 0)
+        bg:SetWidth(400)
+        bg:SetHeight(26)
+        bg:SetGradient("HORIZONTAL", CreateColor(0, 0, 0, 0.3), CreateColor(0, 0, 0, 0))
+
+        local accent = frame:CreateTexture(nil, "ARTWORK")
+        accent:SetPoint("LEFT", frame, "LEFT", -6, 0)
+        accent:SetWidth(3)
+        accent:SetHeight(26)
+
         frame:Hide()
         table.insert(CA.alertPool, {
-            frame=frame, fs=fs, state="idle",
+            frame=frame, fs=fs, bg=bg, accent=accent, glowTex=glowTex,
+            state="idle",
             animStart=0, activeStart=0, leaveBaseY=0, baseX=0, baseY=0,
         })
     end
@@ -203,20 +226,21 @@ local function CacheCharges()
 end
 
 -- Called from UNIT_AURA (target) and PLAYER_TARGET_CHANGED. Runs on eventEngine so the
--- context is clean; UnitDebuff timing values are plain numbers here.
+-- context is clean; aura timing values are plain numbers here.
 local function CacheDebuff()
     for _, rule in ipairs(CoreAlertsDB.rules or {}) do
         if rule.type == "debuff" then
             local found = false
             for i = 1, 40 do
-                local name, _, _, _, dur, expTime, _, _, _, sid =
-                    UnitDebuff("target", i, "PLAYER")
-                if not name then break end
-                if sid == rule.spellID and dur and dur > 0 and expTime and expTime > 0 then
+                local aura = C_UnitAuras.GetAuraDataByIndex("target", i, "HARMFUL|PLAYER")
+                if not aura then break end
+                if aura.spellId == rule.spellID
+                    and aura.duration and aura.duration > 0
+                    and aura.expirationTime and aura.expirationTime > 0 then
                     local entry = spellCache[rule.spellID] or {}
                     spellCache[rule.spellID] = entry
-                    entry.auraEndTime  = expTime
-                    entry.auraDuration = dur
+                    entry.auraEndTime  = aura.expirationTime
+                    entry.auraDuration = aura.duration
                     found = true
                     break
                 end
@@ -381,6 +405,21 @@ local function ProcessGameTick()
                 entry.state     = "entering"
                 entry.fs:SetFont(WOW_FONT, rule.fontSize or 20, "OUTLINE")
                 entry.fs:SetTextColor(rule.colorR or 1, rule.colorG or 1, rule.colorB or 1)
+                -- Background, accent and optional glow — sized and colored per rule
+                local h = (rule.fontSize or 20) + 10
+                local r, g, b   = rule.colorR or 1, rule.colorG or 1, rule.colorB or 1
+                local br, bg_c, bb = rule.borderColorR or r, rule.borderColorG or g, rule.borderColorB or b
+                entry.bg:SetHeight(h)
+                entry.bg:SetGradient("HORIZONTAL", CreateColor(br, bg_c, bb, 0.2), CreateColor(br, bg_c, bb, 0))
+                entry.accent:SetHeight(h)
+                entry.accent:SetColorTexture(br, bg_c, bb, 0.85)
+                if rule.glow then
+                    entry.glowTex:SetHeight(h + 20)
+                    entry.glowTex:SetGradient("HORIZONTAL", CreateColor(br, bg_c, bb, 0.7), CreateColor(br, bg_c, bb, 0))
+                    entry.glowTex:Show()
+                else
+                    entry.glowTex:Hide()
+                end
                 entry.frame:ClearAllPoints()
                 entry.frame:SetPoint("LEFT", UIParent, "CENTER",
                     entry.baseX + ENTER_SLIDE_X, entry.baseY)
